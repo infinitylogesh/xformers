@@ -23,16 +23,16 @@ from tokenizer import Tokenizer
 from xformers.ops.fmha.attn_bias import (
     BlockDiagonalCausalWithOffsetPaddedKeysMask as AttnBias,
 )
+from utils import _fetch_constantlength_inputs
+from transformers import AutoTokenizer
 
 
 @dataclass
 class GenArgs:
-    gen_length: int = 1000
-
+    gen_length: int = 20
     use_sampling: bool = True
     temperature: float = 0.6
     top_p: float = 0.9
-
 
 class FastGen:
     GRAPH_WARMUPS: int = 3
@@ -204,7 +204,7 @@ class FastGen:
         return stats, answers
 
 
-def get_prompts(interactive: bool) -> Iterable[list[str]]:
+def get_prompts(interactive: bool,batch_size:int, hf_tokenizer,input_token_length:int) -> Iterable[list[str]]:
     if interactive:
         while True:
             try:
@@ -214,14 +214,14 @@ def get_prompts(interactive: bool) -> Iterable[list[str]]:
                 sys.exit(0)
             yield prompts
     else:
-        yield [
-            "abc",
-            "can you write a hello world program in C#",
-            "peux tu resoudre le probleme des tours de Hanoi en ocaml",
-        ]
+        input_sentences = _fetch_constantlength_inputs(
+            batch_size, hf_tokenizer, input_token_length
+        )
+
+        yield input_sentences
 
 
-def main(ckpt_dir: str, interactive: bool = False, add_instruction_tags: bool = True):
+def main(ckpt_dir: str, interactive: bool = False, add_instruction_tags: bool = False,batch_size:int=5,tokenizer_name:str="",input_seq_len:int=1000,output_seq_len:int=20):
     if "WORLD_SIZE" in os.environ:
         mp_size = int(os.environ["WORLD_SIZE"])
         local_rank = int(os.environ["LOCAL_RANK"])
@@ -229,11 +229,14 @@ def main(ckpt_dir: str, interactive: bool = False, add_instruction_tags: bool = 
         mp_size = 1
         local_rank = 0
 
+    hf_tokenizer = AutoTokenizer.from_pretrained(tokenizer_name) 
     device = mp_utils.initialize(mp_size, local_rank)
+    gen_args = GenArgs(gen_length=output_seq_len)
+    g = FastGen.build(ckpt_dir, gen_args, device)
 
-    g = FastGen.build(ckpt_dir, GenArgs(), device)
+    for prompts in get_prompts(interactive,batch_size,hf_tokenizer,input_seq_len):
+        #import pdb;pdb.set_trace()
 
-    for prompts in get_prompts(interactive):
         if add_instruction_tags:
             prompts = [f"[INST]{prompt}[/INST]" for prompt in prompts]
 
